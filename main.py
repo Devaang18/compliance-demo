@@ -92,7 +92,7 @@ def format_report_html(report_json):
         """
     html += """
         </table>
-        <p>Thank you,<br>Compliance AI Bot</p>
+        <p>Thank you for using Solas Compliance.</p>
     </body>
     </html>
     """
