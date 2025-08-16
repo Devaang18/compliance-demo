@@ -17,7 +17,7 @@ load_dotenv()
 # ================================
 # CONFIGURATION
 # ================================
-ALLOWED_SENDERS = os.getenv("ALLOWED_SENDERS", "").split(",")
+ALLOWED_SENDERS = ['devaang18@gmail.com', 'neildillon10@gmail.com']
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 SMTP_EMAIL = os.getenv("SMTP_EMAIL")
