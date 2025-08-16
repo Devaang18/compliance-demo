@@ -7,3 +7,6 @@ python-multipart
 email-validator
 python-dotenv
 gunicorn
+requests
+imapclient
+pyzmail36
