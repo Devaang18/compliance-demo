@@ -9,21 +9,21 @@ import base64
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from email.mime.application import MIMEApplication
 from dotenv import load_dotenv
 import os
+
 load_dotenv()
 
 # ================================
 # CONFIGURATION
 # ================================
-ALLOWED_SENDERS = os.getenv("ALLOWED_SENDERS")
+ALLOWED_SENDERS = os.getenv("ALLOWED_SENDERS", "").split(",")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-SMTP_EMAIL =  os.getenv("SMTP_EMAIL")
+SMTP_EMAIL = os.getenv("SMTP_EMAIL")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
-SMTP_HOST = os.getenv('SMTP_HOST', 'smtp.gmail.com')
-SMTP_PORT = os.getenv("SMTP_PORT", 465)
+SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", 465))
 
 openai.api_key = OPENAI_API_KEY
 
@@ -48,8 +48,10 @@ def extract_text_from_pdf(file_path: str) -> str:
     text = ""
     with pdfplumber.open(file_path) as pdf:
         for page in pdf.pages:
-            text += page.extract_text() + "\n"
-    return text
+            page_text = page.extract_text()
+            if page_text:
+                text += page_text + "\n"
+    return text.strip()
 
 def format_report_html(report_json):
     """Format compliance report as HTML email"""
@@ -97,13 +99,12 @@ def format_report_html(report_json):
     return html
 
 def send_email(to_email: str, subject: str, html_body: str):
-    """Send HTML email via Gmail SMTP"""
+    """Send HTML email via SMTP"""
     msg = MIMEMultipart("alternative")
     msg['Subject'] = subject
     msg['From'] = SMTP_EMAIL
     msg['To'] = to_email
-    part = MIMEText(html_body, "html")
-    msg.attach(part)
+    msg.attach(MIMEText(html_body, "html"))
     with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as server:
         server.login(SMTP_EMAIL, SMTP_PASSWORD)
         server.send_message(msg)
@@ -129,12 +130,11 @@ async def review_email(payload: EmailPayload):
     # Extract text
     try:
         chunk_text = extract_text_from_pdf(tmp_path)
-        if not chunk_text.strip():
+        if not chunk_text:
             raise HTTPException(status_code=400, detail="PDF contains no extractable text")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"PDF extraction error: {str(e)}")
-
-    # GPT-5 Compliance Prompt
+        
     prompt = f"""
 You are a compliance expert specializing in gambling, marketing, and legal regulations. Review the following document text and identify violations of SPECIFIC regulated policy rules from these industries.
 
@@ -169,15 +169,21 @@ Return valid JSON only.
 """
 
     # GPT-5 API Call
+    # GPT-5 API Call with safe parsing
     try:
         response = openai.chat.completions.create(
             model="gpt-5-chat-latest",
             messages=[{"role": "user", "content": prompt}]
         )
         gpt_output = response.choices[0].message.content
-        report_json = json.loads(gpt_output)
+        if not gpt_output.strip():
+            raise HTTPException(status_code=500, detail="GPT returned empty output")
+        try:
+            report_json = json.loads(gpt_output)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=500, detail=f"GPT returned invalid JSON. Raw output: {repr(gpt_output)}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"GPT-5 processing error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"GPT processing error: {str(e)}")
 
     # Send Email Back
     try:
