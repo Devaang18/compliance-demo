@@ -51,7 +51,7 @@ def extract_text_from_pdf(file_path: str) -> str:
             page_text = page.extract_text()
             if page_text:
                 text += page_text + "\n"
-    return text.strip()
+    return text
 
 def format_report_html(report_json):
     """Format compliance report as HTML email"""
@@ -104,10 +104,24 @@ def send_email(to_email: str, subject: str, html_body: str):
     msg['Subject'] = subject
     msg['From'] = SMTP_EMAIL
     msg['To'] = to_email
-    msg.attach(MIMEText(html_body, "html"))
+    part = MIMEText(html_body, "html")
+    msg.attach(part)
     with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as server:
         server.login(SMTP_EMAIL, SMTP_PASSWORD)
         server.send_message(msg)
+
+def clean_gpt_json(raw_output: str) -> str:
+    """
+    Remove code block markers (```json ... ``` or ``` ... ```) and extra whitespace
+    """
+    cleaned = raw_output.strip()
+    if cleaned.startswith("```json"):
+        cleaned = cleaned[len("```json"):].strip()
+    elif cleaned.startswith("```"):
+        cleaned = cleaned[3:].strip()
+    if cleaned.endswith("```"):
+        cleaned = cleaned[:-3].strip()
+    return cleaned
 
 # ================================
 # ENDPOINT: /review
@@ -130,11 +144,10 @@ async def review_email(payload: EmailPayload):
     # Extract text
     try:
         chunk_text = extract_text_from_pdf(tmp_path)
-        if not chunk_text:
+        if not chunk_text.strip():
             raise HTTPException(status_code=400, detail="PDF contains no extractable text")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"PDF extraction error: {str(e)}")
-        
     prompt = f"""
 You are a compliance expert specializing in gambling, marketing, and legal regulations. Review the following document text and identify violations of SPECIFIC regulated policy rules from these industries.
 
@@ -169,7 +182,6 @@ Return valid JSON only.
 """
 
     # GPT-5 API Call
-    # GPT-5 API Call with safe parsing
     try:
         response = openai.chat.completions.create(
             model="gpt-5-chat-latest",
@@ -178,10 +190,12 @@ Return valid JSON only.
         gpt_output = response.choices[0].message.content
         if not gpt_output.strip():
             raise HTTPException(status_code=500, detail="GPT returned empty output")
-        try:
-            report_json = json.loads(gpt_output)
-        except json.JSONDecodeError:
-            raise HTTPException(status_code=500, detail=f"GPT returned invalid JSON. Raw output: {repr(gpt_output)}")
+
+        cleaned_output = clean_gpt_json(gpt_output)
+        report_json = json.loads(cleaned_output)
+
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=500, detail=f"GPT returned invalid JSON. Raw output: {repr(gpt_output)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"GPT processing error: {str(e)}")
 
