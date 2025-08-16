@@ -174,7 +174,7 @@ Return valid JSON only.
             model="gpt-5-chat-latest",
             messages=[{"role": "user", "content": prompt}]
         )
-        gpt_output = response['choices'][0]['message']['content']
+        gpt_output = response.choices[0].message.content
         report_json = json.loads(gpt_output)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"GPT-5 processing error: {str(e)}")
