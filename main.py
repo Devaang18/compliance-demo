@@ -152,7 +152,7 @@ For each violation found, you must:
 Return ONLY a JSON object with keys:
 - "issues": list of compliance issues found. Each issue must have:
     - id (short string),
-    - category (string: "Gambling", "Marketing", "Legal"),
+    - category (string: "Compliance", "Marketing", "Legal", "Finance"),
     - severity ("Low","Medium","High"),
     - regulation_reference (string: specific regulation/act/section),
     - exact_violation_text (string: quote the exact line from user's document),
