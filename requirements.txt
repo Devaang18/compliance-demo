@@ -6,3 +6,4 @@ pdfplumber
 python-multipart
 email-validator
 python-dotenv
+gunicorn
