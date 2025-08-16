@@ -11,6 +11,10 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from dotenv import load_dotenv
 import os
+import imaplib
+import email
+import threading
+import time
 
 load_dotenv()
 
@@ -24,6 +28,10 @@ SMTP_EMAIL = os.getenv("SMTP_EMAIL")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
 SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", 465))
+
+IMAP_HOST = os.getenv("IMAP_HOST", "imap.gmail.com")
+IMAP_EMAIL = SMTP_EMAIL
+IMAP_PASSWORD = SMTP_PASSWORD
 
 openai.api_key = OPENAI_API_KEY
 
@@ -44,7 +52,6 @@ class EmailPayload(BaseModel):
 # UTILITIES
 # ================================
 def extract_text_from_pdf(file_path: str) -> str:
-    """Extract text from PDF using pdfplumber"""
     text = ""
     with pdfplumber.open(file_path) as pdf:
         for page in pdf.pages:
@@ -54,10 +61,8 @@ def extract_text_from_pdf(file_path: str) -> str:
     return text
 
 def format_report_html(report_json):
-    """Format compliance report as HTML email"""
     summary = report_json.get("summary", "")
     issues = report_json.get("issues", [])
-
     html = f"""
     <html>
     <body>
@@ -99,7 +104,6 @@ def format_report_html(report_json):
     return html
 
 def send_email(to_email: str, subject: str, html_body: str):
-    """Send HTML email via SMTP"""
     msg = MIMEMultipart("alternative")
     msg['Subject'] = subject
     msg['From'] = SMTP_EMAIL
@@ -111,9 +115,6 @@ def send_email(to_email: str, subject: str, html_body: str):
         server.send_message(msg)
 
 def clean_gpt_json(raw_output: str) -> str:
-    """
-    Remove code block markers (```json ... ``` or ``` ... ```) and extra whitespace
-    """
     cleaned = raw_output.strip()
     if cleaned.startswith("```json"):
         cleaned = cleaned[len("```json"):].strip()
@@ -124,30 +125,17 @@ def clean_gpt_json(raw_output: str) -> str:
     return cleaned
 
 # ================================
-# ENDPOINT: /review
+# REVIEW FUNCTION (reusable)
 # ================================
-@app.post("/review")
-async def review_email(payload: EmailPayload):
-    sender = payload.sender
-    if sender not in ALLOWED_SENDERS:
-        raise HTTPException(status_code=403, detail="Sender not allowed")
+def review_pdf(pdf_bytes: bytes, sender_email: str):
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+        tmp.write(pdf_bytes)
+        tmp_path = tmp.name
 
-    # Decode PDF
-    try:
-        pdf_bytes = base64.b64decode(payload.file)
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-            tmp.write(pdf_bytes)
-            tmp_path = tmp.name
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error decoding PDF: {str(e)}")
+    text = extract_text_from_pdf(tmp_path)
+    if not text.strip():
+        raise ValueError("PDF contains no extractable text")
 
-    # Extract text
-    try:
-        chunk_text = extract_text_from_pdf(tmp_path)
-        if not chunk_text.strip():
-            raise HTTPException(status_code=400, detail="PDF contains no extractable text")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"PDF extraction error: {str(e)}")
     prompt = f"""
 You are a compliance expert specializing in gambling, marketing, and legal regulations. Review the following document text and identify violations of SPECIFIC regulated policy rules from these industries.
 
@@ -175,35 +163,78 @@ Return ONLY a JSON object with keys:
 - "summary": a short 2-3 sentence summary of this chunk
 
 Document text to review:
-\"\"\"{chunk_text}
-\"\"\"
+\"\"\"{text}\"\"\"
 
 Return valid JSON only.
 """
 
-    # GPT-5 API Call
+    response = openai.chat.completions.create(
+        model="gpt-5-chat-latest",
+        messages=[{"role": "user", "content": prompt}]
+    )
+    gpt_output = response.choices[0].message.content
+    cleaned = clean_gpt_json(gpt_output)
+    report_json = json.loads(cleaned)
+
+    html_body = format_report_html(report_json)
+    send_email(sender_email, "Your Compliance Report", html_body)
+    return report_json
+
+# ================================
+# FASTAPI ENDPOINT
+# ================================
+@app.post("/review")
+async def review_endpoint(payload: EmailPayload):
+    if payload.sender not in ALLOWED_SENDERS:
+        raise HTTPException(status_code=403, detail="Sender not allowed")
     try:
-        response = openai.chat.completions.create(
-            model="gpt-5-chat-latest",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        gpt_output = response.choices[0].message.content
-        if not gpt_output.strip():
-            raise HTTPException(status_code=500, detail="GPT returned empty output")
-
-        cleaned_output = clean_gpt_json(gpt_output)
-        report_json = json.loads(cleaned_output)
-
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=500, detail=f"GPT returned invalid JSON. Raw output: {repr(gpt_output)}")
+        pdf_bytes = base64.b64decode(payload.file)
+        report = review_pdf(pdf_bytes, payload.sender)
+        return JSONResponse(content=report)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"GPT processing error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-    # Send Email Back
-    try:
-        html_body = format_report_html(report_json)
-        send_email(sender, "Your Compliance Report", html_body)
-    except Exception as e:
-        print(f"Warning: failed to send email: {str(e)}")
+# ================================
+# IMAP EMAIL LISTENER (background)
+# ================================
+def email_listener_loop():
+    while True:
+        try:
+            mail = imaplib.IMAP4_SSL(IMAP_HOST)
+            mail.login(IMAP_EMAIL, IMAP_PASSWORD)
+            mail.select("inbox")
+            status, messages = mail.search(None, '(UNSEEN)')
+            if status != "OK":
+                time.sleep(30)
+                continue
 
-    return JSONResponse(content=report_json)
+            for num in messages[0].split():
+                status, msg_data = mail.fetch(num, '(RFC822)')
+                if status != "OK":
+                    continue
+                msg = email.message_from_bytes(msg_data[0][1])
+                sender_email = email.utils.parseaddr(msg.get("From"))[1]
+
+                if sender_email not in ALLOWED_SENDERS:
+                    mail.store(num, '+FLAGS', '\\Seen')
+                    continue
+
+                # Process PDF attachments
+                for part in msg.walk():
+                    if part.get_content_type() == "application/pdf":
+                        pdf_bytes = part.get_payload(decode=True)
+                        try:
+                            review_pdf(pdf_bytes, sender_email)
+                        except Exception as e:
+                            print(f"Failed to review email from {sender_email}: {e}")
+
+                # Mark email as read
+                mail.store(num, '+FLAGS', '\\Seen')
+
+            mail.logout()
+        except Exception as e:
+            print(f"Email listener error: {e}")
+        time.sleep(60)  # Check every 60 seconds
+
+# Start email listener in a separate thread
+threading.Thread(target=email_listener_loop, daemon=True).start()
