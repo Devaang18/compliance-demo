@@ -63,6 +63,7 @@ def extract_text_from_pdf(file_path: str) -> str:
 def format_report_html(report_json):
     summary = report_json.get("summary", "")
     issues = report_json.get("issues", [])
+    
     html = f"""
     <html>
     <body>
@@ -70,6 +71,10 @@ def format_report_html(report_json):
         <p>Here is your Compliance Review Report:</p>
         <h3>Summary:</h3>
         <p>{summary}</p>
+    """
+    
+    if issues:
+        html += """
         <h3>Detailed Issues Found:</h3>
         <table border="1" cellpadding="5" cellspacing="0">
             <tr style="background-color:#f2f2f2;">
@@ -80,26 +85,34 @@ def format_report_html(report_json):
                 <th>Rule Description</th>
                 <th>Recommendation</th>
             </tr>
-    """
-    for issue in issues:
-        severity_color = {"Low":"#d4edda","Medium":"#fff3cd","High":"#f8d7da"}.get(issue.get("severity","Low"), "#ffffff")
-        html += f"""
-            <tr style="background-color:{severity_color};">
-                <td>{issue.get('category')}</td>
-                <td>{issue.get('severity')}</td>
-                <td>{issue.get('regulation_reference')}</td>
-                <td>{issue.get('exact_violation_text')}</td>
-                <td>{issue.get('rule_description')}</td>
-                <td>{issue.get('recommendation')}</td>
-            </tr>
         """
+        for issue in issues:
+            severity_color = {"Low":"#d4edda","Medium":"#fff3cd","High":"#f8d7da"}.get(issue.get("severity","Low"), "#ffffff")
+            html += f"""
+                <tr style="background-color:{severity_color};">
+                    <td>{issue.get('category')}</td>
+                    <td>{issue.get('severity')}</td>
+                    <td>{issue.get('regulation_reference')}</td>
+                    <td>{issue.get('exact_violation_text')}</td>
+                    <td>{issue.get('rule_description')}</td>
+                    <td>{issue.get('recommendation')}</td>
+                </tr>
+            """
+        html += "</table>"
+    else:
+        html += """
+        <p style="padding:10px; background-color:#d4edda; border:1px solid #c3e6cb; border-radius:5px;">
+            ✅ No compliance issues were found in the submitted document. The document appears fully compliant.
+        </p>
+        """
+
     html += """
-        </table>
         <p>Thank you for using Solas Compliance.</p>
     </body>
     </html>
     """
     return html
+
 
 def send_email(to_email: str, subject: str, html_body: str):
     msg = MIMEMultipart("alternative")
