@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+pydantic
+openai
+pdfplumber
+python-multipart
+email-validator
+python-dotenv
