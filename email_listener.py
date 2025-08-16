@@ -9,7 +9,7 @@ IMAP_HOST = "imap.gmail.com"
 IMAP_USER = os.getenv("SMTP_EMAIL")
 IMAP_PASS = os.getenv("SMTP_PASSWORD")  # App password
 ALLOWED_SENDERS = ['devaang18@gmail.com', 'neildillon10@gmail.com']
-FASTAPI_ENDPOINT = https://compliance-demo.onrender.com
+FASTAPI_ENDPOINT = "https://compliance-demo.onrender.com"
 
 def process_mail():
     mail = imaplib.IMAP4_SSL(IMAP_HOST)
