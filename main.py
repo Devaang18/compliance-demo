@@ -73,7 +73,6 @@ def format_report_html(report_json):
         <h3>Detailed Issues Found:</h3>
         <table border="1" cellpadding="5" cellspacing="0">
             <tr style="background-color:#f2f2f2;">
-                <th>ID</th>
                 <th>Category</th>
                 <th>Severity</th>
                 <th>Regulation Reference</th>
@@ -86,7 +85,6 @@ def format_report_html(report_json):
         severity_color = {"Low":"#d4edda","Medium":"#fff3cd","High":"#f8d7da"}.get(issue.get("severity","Low"), "#ffffff")
         html += f"""
             <tr style="background-color:{severity_color};">
-                <td>{issue.get('id')}</td>
                 <td>{issue.get('category')}</td>
                 <td>{issue.get('severity')}</td>
                 <td>{issue.get('regulation_reference')}</td>
