@@ -143,6 +143,7 @@ IMPORTANT: Only reference ACTUAL regulated policy rules from:
 - Legal compliance (e.g., GDPR, consumer protection laws, financial regulations)
 
 DO NOT create or reference made-up rules. Only use established regulatory frameworks.
+If no violations exist, explicitly return an empty issues list and state in the summary that the document is fully compliant.
 
 For each violation found, you must:
 1. Reference the SPECIFIC regulation/act/section
