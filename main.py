@@ -63,7 +63,7 @@ def extract_text_from_pdf(file_path: str) -> str:
 def format_report_html(report_json):
     summary = report_json.get("summary", "")
     issues = report_json.get("issues", [])
-    
+
     html = f"""
     <html>
     <body>
@@ -72,7 +72,7 @@ def format_report_html(report_json):
         <h3>Summary:</h3>
         <p>{summary}</p>
     """
-    
+
     if issues:
         html += """
         <h3>Detailed Issues Found:</h3>
@@ -113,17 +113,21 @@ def format_report_html(report_json):
     """
     return html
 
-
-def send_email(to_email: str, subject: str, html_body: str):
+def send_email(to_email: str, cc_emails: list, subject: str, html_body: str):
     msg = MIMEMultipart("alternative")
     msg['Subject'] = subject
     msg['From'] = SMTP_EMAIL
     msg['To'] = to_email
+    if cc_emails:
+        msg['Cc'] = ", ".join(cc_emails)
+
     part = MIMEText(html_body, "html")
     msg.attach(part)
+
+    all_recipients = [to_email] + cc_emails
     with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as server:
         server.login(SMTP_EMAIL, SMTP_PASSWORD)
-        server.send_message(msg)
+        server.sendmail(SMTP_EMAIL, all_recipients, msg.as_string())
 
 def clean_gpt_json(raw_output: str) -> str:
     cleaned = raw_output.strip()
@@ -136,9 +140,9 @@ def clean_gpt_json(raw_output: str) -> str:
     return cleaned
 
 # ================================
-# REVIEW FUNCTION (reusable)
+# REVIEW FUNCTION
 # ================================
-def review_pdf(pdf_bytes: bytes, sender_email: str):
+def review_pdf(pdf_bytes: bytes):
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
         tmp.write(pdf_bytes)
         tmp_path = tmp.name
@@ -187,10 +191,8 @@ Return valid JSON only.
     gpt_output = response.choices[0].message.content
     cleaned = clean_gpt_json(gpt_output)
     report_json = json.loads(cleaned)
-
     html_body = format_report_html(report_json)
-    send_email(sender_email, "Your Compliance Report", html_body)
-    return report_json
+    return report_json, html_body
 
 # ================================
 # FASTAPI ENDPOINT
@@ -201,13 +203,14 @@ async def review_endpoint(payload: EmailPayload):
         raise HTTPException(status_code=403, detail="Sender not allowed")
     try:
         pdf_bytes = base64.b64decode(payload.file)
-        report = review_pdf(pdf_bytes, payload.sender)
+        report, html_body = review_pdf(pdf_bytes)
+        send_email(payload.sender, [], "Your Compliance Report", html_body)
         return JSONResponse(content=report)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 # ================================
-# IMAP EMAIL LISTENER (background)
+# IMAP EMAIL LISTENER
 # ================================
 def email_listener_loop():
     while True:
@@ -226,6 +229,9 @@ def email_listener_loop():
                     continue
                 msg = email.message_from_bytes(msg_data[0][1])
                 sender_email = email.utils.parseaddr(msg.get("From"))[1]
+                cc_emails = []
+                if msg.get("Cc"):
+                    cc_emails = [email.utils.parseaddr(addr)[1] for addr in msg.get("Cc").split(",")]
 
                 if sender_email not in ALLOWED_SENDERS:
                     mail.store(num, '+FLAGS', '\\Seen')
@@ -236,17 +242,17 @@ def email_listener_loop():
                     if part.get_content_type() == "application/pdf":
                         pdf_bytes = part.get_payload(decode=True)
                         try:
-                            review_pdf(pdf_bytes, sender_email)
+                            report_json, html_body = review_pdf(pdf_bytes)
+                            send_email(sender_email, cc_emails, "Your Compliance Report", html_body)
                         except Exception as e:
                             print(f"Failed to review email from {sender_email}: {e}")
 
-                # Mark email as read
                 mail.store(num, '+FLAGS', '\\Seen')
 
             mail.logout()
         except Exception as e:
             print(f"Email listener error: {e}")
-        time.sleep(60)  # Check every 60 seconds
+        time.sleep(60)
 
 # Start email listener in a separate thread
 threading.Thread(target=email_listener_loop, daemon=True).start()
