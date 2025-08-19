@@ -9,12 +9,13 @@ import base64
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from dotenv import load_dotenv
+from email.utils import getaddresses
 import os
 import imaplib
 import email
 import threading
 import time
+from dotenv import load_dotenv
 
 load_dotenv()
 
@@ -60,10 +61,11 @@ def extract_text_from_pdf(file_path: str) -> str:
                 text += page_text + "\n"
     return text
 
+
 def format_report_html(report_json):
     summary = report_json.get("summary", "")
     issues = report_json.get("issues", [])
-    
+
     html = f"""
     <html>
     <body>
@@ -72,7 +74,7 @@ def format_report_html(report_json):
         <h3>Summary:</h3>
         <p>{summary}</p>
     """
-    
+
     if issues:
         html += """
         <h3>Detailed Issues Found:</h3>
@@ -114,16 +116,22 @@ def format_report_html(report_json):
     return html
 
 
-def send_email(to_email: str, cc_emails: list, subject: str, html_body: str):
+def send_email(to_email: str, cc_emails: list, subject: str, html_body: str, original_msg=None):
     if cc_emails is None:
         cc_emails = []
 
     msg = MIMEMultipart("alternative")
-    msg['Subject'] = subject
+    msg['Subject'] = "Re: " + subject if not subject.startswith("Re:") else subject
     msg['From'] = SMTP_EMAIL
     msg['To'] = to_email
     if cc_emails:
         msg['Cc'] = ", ".join(cc_emails)
+
+    # Preserve threading
+    if original_msg:
+        if original_msg.get("Message-ID"):
+            msg['In-Reply-To'] = original_msg.get("Message-ID")
+            msg['References'] = original_msg.get("Message-ID")
 
     part = MIMEText(html_body, "html")
     msg.attach(part)
@@ -133,6 +141,7 @@ def send_email(to_email: str, cc_emails: list, subject: str, html_body: str):
     with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as server:
         server.login(SMTP_EMAIL, SMTP_PASSWORD)
         server.sendmail(SMTP_EMAIL, all_recipients, msg.as_string())
+
 
 def clean_gpt_json(raw_output: str) -> str:
     cleaned = raw_output.strip()
@@ -145,9 +154,9 @@ def clean_gpt_json(raw_output: str) -> str:
     return cleaned
 
 # ================================
-# REVIEW FUNCTION (reusable)
+# REVIEW FUNCTION
 # ================================
-def review_pdf(pdf_bytes: bytes, sender_email: str, cc_emails: list = None):
+def review_pdf(pdf_bytes: bytes, sender_email: str, cc_emails: list = None, original_msg=None):
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
         tmp.write(pdf_bytes)
         tmp_path = tmp.name
@@ -174,15 +183,14 @@ For each violation found, you must:
 
 Return ONLY a JSON object with keys:
 - "issues": list of compliance issues found. Each issue must have:
-    - id (short string),
-    - category (string: "Compliance", "Marketing", "Legal", "Finance"),
-    - severity ("Low","Medium","High"),
-    - regulation_reference (string: specific regulation/act/section),
-    - exact_violation_text (string: quote the exact line from user's document),
-    - rule_description (string: what the regulation requires),
-    - recommendation (string: how to fix the violation)
-- "summary": a short 2-3 sentence summary of this chunk
-
+    - id
+    - category
+    - severity
+    - regulation_reference
+    - exact_violation_text
+    - rule_description
+    - recommendation
+- "summary": a short 2-3 sentence summary
 Document text to review:
 \"\"\"{text}\"\"\"
 
@@ -198,7 +206,7 @@ Return valid JSON only.
     report_json = json.loads(cleaned)
 
     html_body = format_report_html(report_json)
-    send_email(sender_email, cc_emails, "Your Compliance Report", html_body)
+    send_email(sender_email, cc_emails, "Your Compliance Report", html_body, original_msg=original_msg)
     return report_json
 
 # ================================
@@ -216,7 +224,7 @@ async def review_endpoint(payload: EmailPayload):
         raise HTTPException(status_code=500, detail=str(e))
 
 # ================================
-# IMAP EMAIL LISTENER (background)
+# IMAP EMAIL LISTENER
 # ================================
 def email_listener_loop():
     while True:
@@ -236,12 +244,11 @@ def email_listener_loop():
                 msg = email.message_from_bytes(msg_data[0][1])
                 sender_email = email.utils.parseaddr(msg.get("From"))[1]
 
-                # Extract CC recipients
-                cc_emails = []
-                if msg.get("Cc"):
-                    cc_emails = [email.utils.parseaddr(addr)[1] for addr in msg.get("Cc").split(",")]
+                # ✅ Extract CC recipients robustly
+                cc_emails = [addr for name, addr in getaddresses(msg.get_all("Cc", []))]
 
                 if sender_email not in ALLOWED_SENDERS:
+                    # not allowed to trigger review, skip
                     mail.store(num, '+FLAGS', '\\Seen')
                     continue
 
@@ -250,7 +257,7 @@ def email_listener_loop():
                     if part.get_content_type() == "application/pdf":
                         pdf_bytes = part.get_payload(decode=True)
                         try:
-                            review_pdf(pdf_bytes, sender_email, cc_emails)
+                            review_pdf(pdf_bytes, sender_email, cc_emails, original_msg=msg)
                         except Exception as e:
                             print(f"Failed to review email from {sender_email}: {e}")
 
@@ -260,7 +267,7 @@ def email_listener_loop():
             mail.logout()
         except Exception as e:
             print(f"Email listener error: {e}")
-        time.sleep(60)  # Check every 60 seconds
+        time.sleep(60)  # poll every 60s
 
-# Start email listener in a separate thread
+# Run listener thread
 threading.Thread(target=email_listener_loop, daemon=True).start()
